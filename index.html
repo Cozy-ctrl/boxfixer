@@ -332,10 +332,26 @@
         statusEl.textContent = "Sending your request...";
         submitBtn.disabled = true;
 
+        const title = form.title.value.trim();
+        const description = form.description.value.trim();
+        const email = form.email.value.trim();
+
+        if (title.length < 5) {
+          statusEl.textContent = "Change title must be at least 5 characters.";
+          submitBtn.disabled = false;
+          return;
+        }
+
+        if (description.length < 10) {
+          statusEl.textContent = "Description must be at least 10 characters.";
+          submitBtn.disabled = false;
+          return;
+        }
+
         const payload = {
-          title: form.title.value,
-          description: form.description.value,
-          email: form.email.value || undefined,
+          title,
+          description,
+          email: email || undefined,
           sourceUrl: window.location.href,
         };
 
@@ -349,7 +365,17 @@
           const data = await response.json().catch(() => ({}));
 
           if (!response.ok) {
-            const details = [data.error, data.message].filter(Boolean).join(": ");
+            const fieldErrors = data?.issues?.fieldErrors;
+            const issueLines = fieldErrors
+              ? Object.entries(fieldErrors)
+                  .flatMap(([field, messages]) =>
+                    Array.isArray(messages)
+                      ? messages.map((message) => `${field}: ${message}`)
+                      : [],
+                  )
+                  .join(" | ")
+              : "";
+            const details = [data.error, data.message, issueLines].filter(Boolean).join(": ");
             throw new Error(details || "Could not submit request.");
           }
 
