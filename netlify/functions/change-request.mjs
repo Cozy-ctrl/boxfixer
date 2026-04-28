@@ -18,6 +18,16 @@ const jsonHeaders = {
   "Content-Type": "application/json",
 };
 
+const githubOneActionIds = {
+  createIssue: "conn_mod_def::GJ3ZOgmKVac::6mksPa9nTK-WqE9cw3w6sg",
+  createPullRequest: "conn_mod_def::GJ3Zvwimv2M::OUXep-YSTTahrYwgTonbEQ",
+  createOrUpdateFileContents: "conn_mod_def::GJ3Z6PMkkJs::JqZng63wRPmYE8noRt3IcA",
+  createGitReference: "conn_mod_def::GJ3ZJzQSbw4::FMDSgh1WS5mvn2imiAkk2w",
+  getGitReference: "conn_mod_def::GJ3ZKe5vDKs::xb13z7ZBRnOWekJ-N_TG3w",
+  listBranches: "conn_mod_def::GJ3aGRCYx4M::Y-VXDk4uS0Cfq9VxPQ4y8Q",
+  getPullRequest: "conn_mod_def::GJ3ZwtLhLF8::IXLUkrH2TNGXzoPNPM7PdA",
+};
+
 export const handler = async (event) => {
   if (event.httpMethod !== "POST") {
     return {
@@ -125,9 +135,12 @@ export const handler = async (event) => {
     try {
       await ensureOneCliInstalled(box, oneApiKey);
 
-      const actionId = await resolveGithubCreateIssueActionIdInBox({
+      const actionId = githubOneActionIds.createIssue;
+
+      const actionKnowledge = await getGithubActionKnowledgeInBox({
         box,
         oneApiKey,
+        actionId,
       });
 
       const issueResult = await createGithubIssueWithOneInBox({
@@ -157,6 +170,10 @@ export const handler = async (event) => {
                 description: data.description,
               },
             },
+            one: {
+              actionId,
+              knowledge: summarizeKnowledge(actionKnowledge),
+            },
             issueResult,
           }),
         };
@@ -167,6 +184,9 @@ export const handler = async (event) => {
         "Plan and produce the exact code changes needed for the request.",
         `Target repository: ${normalizedRepo}`,
         `Base branch: ${githubTargetBranch}`,
+        "Use One CLI for all GitHub operations. Do not use direct GitHub tokens.",
+        `One GitHub connection key: ${oneGithubConnectionKey}`,
+        `One action IDs: ${JSON.stringify(githubOneActionIds)}`,
         "Return a concise implementation summary.",
         "",
         `Change title: ${data.title}`,
@@ -189,6 +209,10 @@ export const handler = async (event) => {
           ok: true,
           dryRun: false,
           result: run.result,
+          one: {
+            actionId,
+            knowledge: summarizeKnowledge(actionKnowledge),
+          },
           issueResult,
         }),
       };
@@ -213,25 +237,6 @@ async function ensureOneCliInstalled(box, oneApiKey) {
   );
 }
 
-async function resolveGithubCreateIssueActionIdInBox({ box, oneApiKey }) {
-  const command = `${buildOneEnv(oneApiKey)} one --agent actions search github ${shellQuote("create issue")} -t execute`;
-  const result = await box.exec.command(command);
-  const parsed = parseCliStdout(extractCommandStdout(result));
-
-  if (parsed?.error) {
-    throw new Error(typeof parsed.error === "string" ? parsed.error : "One CLI action search failed");
-  }
-
-  const actionId = selectGithubCreateIssueActionId(parsed) || extractActionId(parsed);
-  if (!actionId) {
-    const raw = typeof parsed?.raw === "string" ? parsed.raw : JSON.stringify(parsed);
-    const snippet = String(raw || "").slice(0, 600);
-    throw new Error(`Unable to resolve GitHub create-issue action ID from One CLI search results. Output: ${snippet}`);
-  }
-
-  return actionId;
-}
-
 async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owner, repo, actionId, connectionKey }) {
   const pathVars = JSON.stringify({ owner, repo });
   const payload = JSON.stringify({ title, body });
@@ -246,31 +251,41 @@ async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owne
   return parsed;
 }
 
-function selectGithubCreateIssueActionId(payload) {
-  const actions = Array.isArray(payload?.actions) ? payload.actions : [];
-  for (const action of actions) {
-    if (!action || typeof action !== "object") {
-      continue;
-    }
+async function getGithubActionKnowledgeInBox({ box, oneApiKey, actionId }) {
+  const command = `${buildOneEnv(oneApiKey)} one --agent actions knowledge github ${shellQuote(actionId)}`;
+  const result = await box.exec.command(command);
+  const parsed = parseCliStdout(extractCommandStdout(result));
 
-    const title = typeof action.title === "string" ? action.title.toLowerCase() : "";
-    const path = typeof action.path === "string" ? action.path.toLowerCase() : "";
-    const id = typeof action.actionId === "string" ? action.actionId : null;
-
-    if (!id) {
-      continue;
-    }
-
-    if (title.includes("create") && title.includes("issue") && title.includes("repository")) {
-      return id;
-    }
-
-    if (path === "/repos/{{owner}}/{{repo}}/issues") {
-      return id;
-    }
+  if (parsed?.error) {
+    throw new Error(typeof parsed.error === "string" ? parsed.error : "One CLI action knowledge failed");
   }
 
-  return null;
+  return parsed;
+}
+
+function summarizeKnowledge(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  const summary = {};
+  if (typeof payload.method === "string") {
+    summary.method = payload.method;
+  }
+  if (typeof payload.path === "string") {
+    summary.path = payload.path;
+  }
+  if (typeof payload.title === "string") {
+    summary.title = payload.title;
+  }
+  if (payload._cache && typeof payload._cache === "object") {
+    summary.cache = payload._cache;
+  }
+  if (typeof payload.knowledge === "string") {
+    summary.knowledgePreview = payload.knowledge.slice(0, 220);
+  }
+
+  return summary;
 }
 
 function buildOneEnv(oneApiKey) {
@@ -295,81 +310,6 @@ function extractCommandStdout(result) {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
-}
-
-function extractActionId(payload) {
-  if (!payload) {
-    return null;
-  }
-
-  if (typeof payload === "string") {
-    return extractActionIdFromText(payload);
-  }
-
-  if (Array.isArray(payload)) {
-    for (const item of payload) {
-      const found = extractActionId(item);
-      if (found) {
-        return found;
-      }
-    }
-    return null;
-  }
-
-  if (typeof payload === "object") {
-    if (typeof payload.actionId === "string") {
-      return payload.actionId;
-    }
-    if (typeof payload.action_id === "string") {
-      return payload.action_id;
-    }
-    if (typeof payload.id === "string") {
-      return payload.id;
-    }
-    if (typeof payload.actionKey === "string") {
-      return payload.actionKey;
-    }
-    if (typeof payload.key === "string") {
-      return payload.key;
-    }
-
-    for (const key of ["actions", "results", "items", "data"]) {
-      const found = extractActionId(payload[key]);
-      if (found) {
-        return found;
-      }
-    }
-
-    for (const value of Object.values(payload)) {
-      if (typeof value === "object" && value !== null) {
-        const found = extractActionId(value);
-        if (found) {
-          return found;
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-function extractActionIdFromText(text) {
-  const patterns = [
-    /"actionId"\s*:\s*"([^"]+)"/i,
-    /"action_id"\s*:\s*"([^"]+)"/i,
-    /"actionKey"\s*:\s*"([^"]+)"/i,
-    /"key"\s*:\s*"([^"]+)"/i,
-    /\b([a-z0-9._-]*create[a-z0-9._-]*issue[a-z0-9._-]*)\b/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) {
-      return match[1];
-    }
-  }
-
-  return null;
 }
 
 function normalizeRepo(value) {
