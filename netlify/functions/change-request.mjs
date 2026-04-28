@@ -1,9 +1,13 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Agent, Box } from "@upstash/box";
 import { z } from "zod";
 
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
 
 const requestSchema = z.object({
   title: z.string().min(5).max(120),
@@ -287,26 +291,52 @@ function extractActionId(payload) {
 
 async function runOneCli(args) {
   const fullArgs = ["--agent", ...args];
+  const execOptions = {
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+    env: process.env,
+  };
 
   try {
-    const result = await execFileAsync("one", fullArgs, {
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-      env: process.env,
-    });
+    const result = await execFileAsync("one", fullArgs, execOptions);
     return parseCliStdout(result.stdout);
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      const fallback = await execFileAsync("./node_modules/.bin/one", fullArgs, {
-        timeout: 30_000,
-        maxBuffer: 1024 * 1024,
-        env: process.env,
-      });
-      return parseCliStdout(fallback.stdout);
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      throw error;
     }
 
-    throw error;
+    try {
+      const result = await execFileAsync("npx", ["--no-install", "one", ...fullArgs], execOptions);
+      return parseCliStdout(result.stdout);
+    } catch (npxError) {
+      if (!(npxError && typeof npxError === "object" && "code" in npxError && npxError.code === "ENOENT")) {
+        throw npxError;
+      }
+    }
+
+    const resolvedBin = await resolveOneCliBin();
+    const fallback = await execFileAsync(process.execPath, [resolvedBin, ...fullArgs], execOptions);
+    return parseCliStdout(fallback.stdout);
   }
+}
+
+async function resolveOneCliBin() {
+  const packageJsonPath = require.resolve("@withone/cli/package.json");
+  const packageJsonRaw = await readFile(packageJsonPath, "utf8");
+  const packageJson = JSON.parse(packageJsonRaw);
+
+  let binRelativePath = null;
+  if (typeof packageJson.bin === "string") {
+    binRelativePath = packageJson.bin;
+  } else if (packageJson.bin && typeof packageJson.bin === "object") {
+    binRelativePath = packageJson.bin.one || Object.values(packageJson.bin)[0];
+  }
+
+  if (!binRelativePath || typeof binRelativePath !== "string") {
+    throw new Error("Could not resolve @withone/cli binary path from package.json");
+  }
+
+  return resolve(dirname(packageJsonPath), binRelativePath);
 }
 
 function normalizeRepo(value) {
