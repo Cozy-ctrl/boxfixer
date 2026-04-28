@@ -1,9 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { Agent, Box } from "@upstash/box";
 import { z } from "zod";
-
-const execFileAsync = promisify(execFile);
 
 const requestSchema = z.object({
   title: z.string().min(5).max(120),
@@ -117,37 +113,9 @@ export const handler = async (event) => {
       .filter(Boolean)
       .join("\n");
 
-    const issueResult = await createGithubIssueWithOne({
-      title: `[BoxFixer Request] ${data.title}`,
-      body: requestIssueBody,
-      owner: githubOwner,
-      repo: githubRepoName,
-      connectionKey: oneGithubConnectionKey,
-    });
-
-    if (dryRun) {
-      return {
-        statusCode: 202,
-        headers: jsonHeaders,
-        body: JSON.stringify({
-          ok: true,
-          dryRun: true,
-          message: "Request accepted. Set BOXFIXER_DRY_RUN=false to run Box agent and push a PR.",
-          plan: {
-            repo: normalizedRepo,
-            targetBranch: githubTargetBranch,
-            request: {
-              title: data.title,
-              description: data.description,
-            },
-          },
-          issueResult,
-        }),
-      };
-    }
-
     const box = await Box.create({
       runtime: "node",
+      name: "netlify-box",
       agent: {
         harness: Agent.ClaudeCode,
         model: boxAgentModel,
@@ -155,6 +123,45 @@ export const handler = async (event) => {
     });
 
     try {
+      await ensureOneCliInstalled(box);
+
+      const actionId = await resolveGithubCreateIssueActionIdInBox({
+        box,
+        oneApiKey,
+      });
+
+      const issueResult = await createGithubIssueWithOneInBox({
+        box,
+        oneApiKey,
+        title: `[BoxFixer Request] ${data.title}`,
+        body: requestIssueBody,
+        owner: githubOwner,
+        repo: githubRepoName,
+        actionId,
+        connectionKey: oneGithubConnectionKey,
+      });
+
+      if (dryRun) {
+        return {
+          statusCode: 202,
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            ok: true,
+            dryRun: true,
+            message: "Request accepted. Set BOXFIXER_DRY_RUN=false to run Box agent and push a PR.",
+            plan: {
+              repo: normalizedRepo,
+              targetBranch: githubTargetBranch,
+              request: {
+                title: data.title,
+                description: data.description,
+              },
+            },
+            issueResult,
+          }),
+        };
+      }
+
       const prompt = [
         "You are an autonomous maintainer for this website repository.",
         "Plan and produce the exact code changes needed for the request.",
@@ -200,46 +207,62 @@ export const handler = async (event) => {
   }
 };
 
-async function createGithubIssueWithOne({ title, body, owner, repo, connectionKey }) {
-  const actionId = await resolveGithubCreateIssueActionId();
-
-  const result = await runOneCli([
-    "actions",
-    "execute",
-    "github",
-    actionId,
-    connectionKey,
-    "-d",
-    JSON.stringify({ title, body, owner, repo }),
-  ]);
-
-  if (result?.error) {
-    throw new Error(typeof result.error === "string" ? result.error : "One CLI action execution failed");
-  }
-
-  return result;
+async function ensureOneCliInstalled(box) {
+  await box.exec.command("command -v one >/dev/null 2>&1 || npm install -g @withone/cli");
 }
 
-async function resolveGithubCreateIssueActionId() {
-  const searchResult = await runOneCli([
-    "actions",
-    "search",
-    "github",
-    "create issue",
-    "-t",
-    "execute",
-  ]);
+async function resolveGithubCreateIssueActionIdInBox({ box, oneApiKey }) {
+  const command = `${buildOneEnv(oneApiKey)} one --agent actions search github ${shellQuote("create issue")} -t execute`;
+  const result = await box.exec.command(command);
+  const parsed = parseCliStdout(extractCommandStdout(result));
 
-  if (searchResult?.error) {
-    throw new Error(typeof searchResult.error === "string" ? searchResult.error : "One CLI action search failed");
+  if (parsed?.error) {
+    throw new Error(typeof parsed.error === "string" ? parsed.error : "One CLI action search failed");
   }
 
-  const actionId = extractActionId(searchResult);
+  const actionId = extractActionId(parsed);
   if (!actionId) {
     throw new Error("Unable to resolve GitHub create-issue action ID from One CLI search results");
   }
 
   return actionId;
+}
+
+async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owner, repo, actionId, connectionKey }) {
+  const payload = JSON.stringify({ title, body, owner, repo });
+  const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} -d ${shellQuote(payload)}`;
+  const result = await box.exec.command(command);
+  const parsed = parseCliStdout(extractCommandStdout(result));
+
+  if (parsed?.error) {
+    throw new Error(typeof parsed.error === "string" ? parsed.error : "One CLI action execution failed");
+  }
+
+  return parsed;
+}
+
+function buildOneEnv(oneApiKey) {
+  return `ONE_API_KEY=${shellQuote(oneApiKey)}`;
+}
+
+function extractCommandStdout(result) {
+  if (!result || typeof result !== "object") {
+    return "";
+  }
+
+  if (typeof result.stdout === "string") {
+    return result.stdout;
+  }
+
+  if (typeof result.output === "string") {
+    return result.output;
+  }
+
+  return "";
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
 function extractActionId(payload) {
@@ -283,43 +306,6 @@ function extractActionId(payload) {
   }
 
   return null;
-}
-
-async function runOneCli(args) {
-  const fullArgs = ["--agent", ...args];
-  const execOptions = {
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-    env: {
-      ...process.env,
-      HOME: process.env.HOME || "/tmp",
-    },
-  };
-
-  const attempts = [
-    { cmd: "one", argv: fullArgs },
-    { cmd: "./node_modules/.bin/one", argv: fullArgs },
-    { cmd: "node_modules/.bin/one", argv: fullArgs },
-    { cmd: `${process.cwd()}/node_modules/.bin/one`, argv: fullArgs },
-    { cmd: "/var/task/node_modules/.bin/one", argv: fullArgs },
-    { cmd: "npx", argv: ["--no-install", "one", ...fullArgs] },
-  ];
-
-  let lastError;
-  for (const attempt of attempts) {
-    try {
-      const result = await execFileAsync(attempt.cmd, attempt.argv, execOptions);
-      return parseCliStdout(result.stdout);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  if (lastError instanceof Error) {
-    throw lastError;
-  }
-
-  throw new Error("Failed to execute One CLI");
 }
 
 function normalizeRepo(value) {
