@@ -289,7 +289,7 @@ function summarizeKnowledge(payload) {
 }
 
 function buildOneEnv(oneApiKey) {
-  return `ONE_SECRET=${shellQuote(oneApiKey)} ONE_API_KEY=${shellQuote(oneApiKey)} HOME=/tmp/box-home NPM_CONFIG_PREFIX=/tmp/one-cli NPM_CONFIG_CACHE=/tmp/.npm-cache PATH=/tmp/one-cli/bin:$PATH`;
+  return `ONE_SECRET=${shellQuote(oneApiKey)} ONE_API_KEY=${shellQuote(oneApiKey)} ONE_PERMISSIONS=admin HOME=/tmp/box-home NPM_CONFIG_PREFIX=/tmp/one-cli NPM_CONFIG_CACHE=/tmp/.npm-cache PATH=/tmp/one-cli/bin:$PATH`;
 }
 
 function extractCommandStdout(result) {
