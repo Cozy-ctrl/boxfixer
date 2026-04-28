@@ -137,6 +137,14 @@ export const handler = async (event) => {
 
       const actionId = githubOneActionIds.createIssue;
 
+      await verifyGithubRepoAccessInBox({
+        box,
+        oneApiKey,
+        connectionKey: oneGithubConnectionKey,
+        owner: githubOwner,
+        repo: githubRepoName,
+      });
+
       const actionKnowledge = await getGithubActionKnowledgeInBox({
         box,
         oneApiKey,
@@ -232,9 +240,10 @@ export const handler = async (event) => {
 };
 
 async function ensureOneCliInstalled(box, oneApiKey) {
-  await box.exec.command(
+  const result = await box.exec.command(
     `${buildOneEnv(oneApiKey)} sh -c ${shellQuote("mkdir -p /tmp/one-cli /tmp/box-home /tmp/.npm-cache && (command -v one >/dev/null 2>&1 || npm install -g @withone/cli) && one --agent list")}`,
   );
+  ensureCommandSucceeded(result, "One CLI bootstrap failed");
 }
 
 async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owner, repo, actionId, connectionKey }) {
@@ -242,7 +251,8 @@ async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owne
   const payload = JSON.stringify({ title, body });
   const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} -d ${shellQuote(payload)}`;
   const result = await box.exec.command(command);
-  const parsed = parseCliStdout(extractCommandStdout(result));
+  ensureCommandSucceeded(result, "One CLI action execution failed");
+  const parsed = parseCliStdout(extractCommandOutput(result));
 
   if (parsed?.error) {
     throw new Error(typeof parsed.error === "string" ? parsed.error : "One CLI action execution failed");
@@ -254,13 +264,31 @@ async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owne
 async function getGithubActionKnowledgeInBox({ box, oneApiKey, actionId }) {
   const command = `${buildOneEnv(oneApiKey)} one --agent actions knowledge github ${shellQuote(actionId)}`;
   const result = await box.exec.command(command);
-  const parsed = parseCliStdout(extractCommandStdout(result));
+  ensureCommandSucceeded(result, "One CLI action knowledge failed");
+  const parsed = parseCliStdout(extractCommandOutput(result));
 
   if (parsed?.error) {
     throw new Error(typeof parsed.error === "string" ? parsed.error : "One CLI action knowledge failed");
   }
 
   return parsed;
+}
+
+async function verifyGithubRepoAccessInBox({ box, oneApiKey, connectionKey, owner, repo }) {
+  const pathVars = JSON.stringify({ owner, repo });
+  const queryParams = JSON.stringify({ per_page: "1" });
+  const actionId = githubOneActionIds.listBranches;
+  const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} --query-params ${shellQuote(queryParams)}`;
+
+  const result = await box.exec.command(command);
+  ensureCommandSucceeded(result, `One GitHub connection cannot access repository ${owner}/${repo}`);
+
+  const parsed = parseCliStdout(extractCommandOutput(result));
+  if (parsed?.error) {
+    throw new Error(
+      `One GitHub connection cannot access repository ${owner}/${repo}: ${typeof parsed.error === "string" ? parsed.error : "unknown error"}`,
+    );
+  }
 }
 
 function summarizeKnowledge(payload) {
@@ -292,12 +320,15 @@ function buildOneEnv(oneApiKey) {
   return `ONE_SECRET=${shellQuote(oneApiKey)} ONE_API_KEY=${shellQuote(oneApiKey)} ONE_PERMISSIONS=admin HOME=/tmp/box-home NPM_CONFIG_PREFIX=/tmp/one-cli NPM_CONFIG_CACHE=/tmp/.npm-cache PATH=/tmp/one-cli/bin:$PATH`;
 }
 
-function extractCommandStdout(result) {
+function extractCommandOutput(result) {
   if (!result || typeof result !== "object") {
     return "";
   }
 
   if (typeof result.stdout === "string") {
+    if (typeof result.stderr === "string" && result.stderr.trim()) {
+      return `${result.stdout}\n${result.stderr}`.trim();
+    }
     return result.stdout;
   }
 
@@ -305,7 +336,43 @@ function extractCommandStdout(result) {
     return result.output;
   }
 
+  if (typeof result.stderr === "string") {
+    return result.stderr;
+  }
+
   return "";
+}
+
+function ensureCommandSucceeded(result, prefix) {
+  const exitCode = extractExitCode(result);
+  if (exitCode === 0 || exitCode === null) {
+    return;
+  }
+
+  const output = extractCommandOutput(result);
+  const snippet = String(output || "").slice(0, 800);
+  throw new Error(`${prefix}. Exit code ${exitCode}. ${snippet}`.trim());
+}
+
+function extractExitCode(result) {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+
+  for (const key of ["exitCode", "code", "status", "exit_code"]) {
+    const value = result[key];
+    if (typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return null;
 }
 
 function shellQuote(value) {
