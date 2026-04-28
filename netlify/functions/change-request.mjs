@@ -123,7 +123,7 @@ export const handler = async (event) => {
     });
 
     try {
-      await ensureOneCliInstalled(box);
+      await ensureOneCliInstalled(box, oneApiKey);
 
       const actionId = await resolveGithubCreateIssueActionIdInBox({
         box,
@@ -207,9 +207,9 @@ export const handler = async (event) => {
   }
 };
 
-async function ensureOneCliInstalled(box) {
+async function ensureOneCliInstalled(box, oneApiKey) {
   await box.exec.command(
-    "command -v one >/dev/null 2>&1 || (mkdir -p /tmp/one-cli /tmp/box-home /tmp/.npm-cache && HOME=/tmp/box-home NPM_CONFIG_PREFIX=/tmp/one-cli NPM_CONFIG_CACHE=/tmp/.npm-cache npm install -g @withone/cli)",
+    `${buildOneEnv(oneApiKey)} sh -c ${shellQuote("mkdir -p /tmp/one-cli /tmp/box-home /tmp/.npm-cache && (command -v one >/dev/null 2>&1 || npm install -g @withone/cli) && one init -y -g && one --agent list")}`,
   );
 }
 
@@ -246,7 +246,7 @@ async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owne
 }
 
 function buildOneEnv(oneApiKey) {
-  return `ONE_API_KEY=${shellQuote(oneApiKey)} HOME=/tmp/box-home NPM_CONFIG_PREFIX=/tmp/one-cli NPM_CONFIG_CACHE=/tmp/.npm-cache PATH=/tmp/one-cli/bin:$PATH`;
+  return `ONE_SECRET=${shellQuote(oneApiKey)} ONE_API_KEY=${shellQuote(oneApiKey)} HOME=/tmp/box-home NPM_CONFIG_PREFIX=/tmp/one-cli NPM_CONFIG_CACHE=/tmp/.npm-cache PATH=/tmp/one-cli/bin:$PATH`;
 }
 
 function extractCommandStdout(result) {
