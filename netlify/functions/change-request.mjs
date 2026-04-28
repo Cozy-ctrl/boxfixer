@@ -1,13 +1,9 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Agent, Box } from "@upstash/box";
 import { z } from "zod";
 
 const execFileAsync = promisify(execFile);
-const require = createRequire(import.meta.url);
 
 const requestSchema = z.object({
   title: z.string().min(5).max(120),
@@ -314,29 +310,18 @@ async function runOneCli(args) {
       }
     }
 
-    const resolvedBin = await resolveOneCliBin();
-    const fallback = await execFileAsync(process.execPath, [resolvedBin, ...fullArgs], execOptions);
-    return parseCliStdout(fallback.stdout);
+    try {
+      const localBin = await execFileAsync("./node_modules/.bin/one", fullArgs, execOptions);
+      return parseCliStdout(localBin.stdout);
+    } catch (localBinError) {
+      if (!(localBinError && typeof localBinError === "object" && "code" in localBinError && localBinError.code === "ENOENT")) {
+        throw localBinError;
+      }
+    }
+
+    const localBinFromRoot = await execFileAsync("node_modules/.bin/one", fullArgs, execOptions);
+    return parseCliStdout(localBinFromRoot.stdout);
   }
-}
-
-async function resolveOneCliBin() {
-  const packageJsonPath = require.resolve("@withone/cli/package.json");
-  const packageJsonRaw = await readFile(packageJsonPath, "utf8");
-  const packageJson = JSON.parse(packageJsonRaw);
-
-  let binRelativePath = null;
-  if (typeof packageJson.bin === "string") {
-    binRelativePath = packageJson.bin;
-  } else if (packageJson.bin && typeof packageJson.bin === "object") {
-    binRelativePath = packageJson.bin.one || Object.values(packageJson.bin)[0];
-  }
-
-  if (!binRelativePath || typeof binRelativePath !== "string") {
-    throw new Error("Could not resolve @withone/cli binary path from package.json");
-  }
-
-  return resolve(dirname(packageJsonPath), binRelativePath);
 }
 
 function normalizeRepo(value) {
