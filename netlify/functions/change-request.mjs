@@ -104,7 +104,7 @@ export const handler = async (event) => {
       statusCode: 500,
       headers: jsonHeaders,
       body: JSON.stringify({
-        error: "Missing GITHUB_OWNER or GITHUB_REPO_NAME env var",
+        error: "Invalid GITHUB_REPO env var. Expected owner/repo or GitHub URL.",
       }),
     };
   }
@@ -241,17 +241,17 @@ export const handler = async (event) => {
 
 async function ensureOneCliInstalled(box, oneApiKey) {
   const result = await box.exec.command(
-    `${buildOneEnv(oneApiKey)} sh -c ${shellQuote("mkdir -p /tmp/one-cli /tmp/box-home /tmp/.npm-cache && (command -v one >/dev/null 2>&1 || npm install -g @withone/cli) && one --agent list")}`,
+    `${buildOneEnv(oneApiKey)} sh -c ${shellQuote("mkdir -p /tmp/one-cli /tmp/box-home /tmp/.npm-cache && (command -v one >/dev/null 2>&1 || npm install -g @withone/cli) && one --help >/dev/null && one actions --help >/dev/null")}`,
   );
-  ensureCommandSucceeded(result, "One CLI bootstrap failed");
+  ensureCommandSucceeded(result, "One CLI bootstrap failed", { oneCli: true });
 }
 
 async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owner, repo, actionId, connectionKey }) {
   const pathVars = JSON.stringify({ owner, repo });
   const payload = JSON.stringify({ title, body });
-  const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} -d ${shellQuote(payload)}`;
+  const command = `${buildOneEnv(oneApiKey)} one actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} -d ${shellQuote(payload)}`;
   const result = await box.exec.command(command);
-  ensureCommandSucceeded(result, "One CLI action execution failed");
+  ensureCommandSucceeded(result, "One CLI action execution failed", { oneCli: true });
   const parsed = parseCliStdout(extractCommandOutput(result));
 
   if (parsed?.error) {
@@ -262,9 +262,9 @@ async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owne
 }
 
 async function getGithubActionKnowledgeInBox({ box, oneApiKey, actionId }) {
-  const command = `${buildOneEnv(oneApiKey)} one --agent actions knowledge github ${shellQuote(actionId)}`;
+  const command = `${buildOneEnv(oneApiKey)} one actions knowledge github ${shellQuote(actionId)}`;
   const result = await box.exec.command(command);
-  ensureCommandSucceeded(result, "One CLI action knowledge failed");
+  ensureCommandSucceeded(result, "One CLI action knowledge failed", { oneCli: true });
   const parsed = parseCliStdout(extractCommandOutput(result));
 
   if (parsed?.error) {
@@ -278,11 +278,11 @@ async function verifyGithubRepoAccessInBox({ box, oneApiKey, connectionKey, owne
   const pathVars = JSON.stringify({ owner, repo });
   const queryParams = JSON.stringify({ per_page: "1" });
   const actionId = githubOneActionIds.listBranches;
-  const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} --query-params ${shellQuote(queryParams)}`;
+  const command = `${buildOneEnv(oneApiKey)} one actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} --query-params ${shellQuote(queryParams)}`;
 
   const result = await box.exec.command(command);
   try {
-    ensureCommandSucceeded(result, `One GitHub connection cannot access repository ${owner}/${repo}`);
+    ensureCommandSucceeded(result, `One GitHub connection cannot access repository ${owner}/${repo}`, { oneCli: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes('"status":"404"') || message.includes('"message":"Not Found"')) {
@@ -359,7 +359,7 @@ function extractCommandOutput(result) {
   return "";
 }
 
-function ensureCommandSucceeded(result, prefix) {
+function ensureCommandSucceeded(result, prefix, options = {}) {
   const exitCode = extractExitCode(result);
   if (exitCode === 0 || exitCode === null) {
     return;
@@ -367,7 +367,27 @@ function ensureCommandSucceeded(result, prefix) {
 
   const output = extractCommandOutput(result);
   const snippet = String(output || "").slice(0, 800);
-  throw new Error(`${prefix}. Exit code ${exitCode}. ${snippet}`.trim());
+  const message = options.oneCli ? enhanceOneCliErrorMessage(snippet) : snippet;
+  const detail = message || snippet;
+  throw new Error(`${prefix}. Exit code ${exitCode}. ${detail}`.trim());
+}
+
+function enhanceOneCliErrorMessage(outputSnippet) {
+  const normalized = String(outputSnippet || "").toLowerCase();
+
+  if (!normalized) {
+    return outputSnippet;
+  }
+
+  if (normalized.includes("not configured") || normalized.includes("run `one init` first")) {
+    return "One CLI is not configured for this runtime. Provide a valid ONE_API_KEY/ONE_SECRET and ensure the key has access to the project/integration.";
+  }
+
+  if (normalized.includes("not authenticated") || normalized.includes("unauthorized") || normalized.includes("forbidden")) {
+    return "One CLI authentication failed. Verify ONE_API_KEY and confirm the GitHub connection key is valid and authorized for the target repository.";
+  }
+
+  return outputSnippet;
 }
 
 function extractExitCode(result) {
