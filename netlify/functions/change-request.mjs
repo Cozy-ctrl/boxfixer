@@ -57,7 +57,6 @@ export const handler = async (event) => {
   const githubTargetBranch = process.env.GITHUB_TARGET_BRANCH || "main";
   const boxAgentModel = process.env.BOX_AGENT_MODEL || "anthropic/claude-sonnet-4-5";
   const oneGithubConnectionKey = process.env.ONE_GITHUB_CONNECTION_KEY;
-  const oneGithubCreateIssueActionId = process.env.ONE_GITHUB_CREATE_ISSUE_ACTION_ID;
   const oneApiKey = process.env.ONE_API_KEY;
   const [githubOwner, githubRepoName] = parseOwnerRepo(githubRepo);
   const dryRun = process.env.BOXFIXER_DRY_RUN !== "false";
@@ -94,14 +93,6 @@ export const handler = async (event) => {
     };
   }
 
-  if (!oneGithubCreateIssueActionId) {
-    return {
-      statusCode: 500,
-      headers: jsonHeaders,
-      body: JSON.stringify({ error: "Missing ONE_GITHUB_CREATE_ISSUE_ACTION_ID env var" }),
-    };
-  }
-
   if (!githubOwner || !githubRepoName) {
     return {
       statusCode: 500,
@@ -131,7 +122,6 @@ export const handler = async (event) => {
       body: requestIssueBody,
       owner: githubOwner,
       repo: githubRepoName,
-      actionId: oneGithubCreateIssueActionId,
       connectionKey: oneGithubConnectionKey,
     });
 
@@ -210,7 +200,9 @@ export const handler = async (event) => {
   }
 };
 
-async function createGithubIssueWithOne({ title, body, owner, repo, actionId, connectionKey }) {
+async function createGithubIssueWithOne({ title, body, owner, repo, connectionKey }) {
+  const actionId = await resolveGithubCreateIssueActionId();
+
   const result = await runOneCli([
     "actions",
     "execute",
@@ -226,6 +218,71 @@ async function createGithubIssueWithOne({ title, body, owner, repo, actionId, co
   }
 
   return result;
+}
+
+async function resolveGithubCreateIssueActionId() {
+  const searchResult = await runOneCli([
+    "actions",
+    "search",
+    "github",
+    "create issue",
+    "-t",
+    "execute",
+  ]);
+
+  if (searchResult?.error) {
+    throw new Error(typeof searchResult.error === "string" ? searchResult.error : "One CLI action search failed");
+  }
+
+  const actionId = extractActionId(searchResult);
+  if (!actionId) {
+    throw new Error("Unable to resolve GitHub create-issue action ID from One CLI search results");
+  }
+
+  return actionId;
+}
+
+function extractActionId(payload) {
+  if (!payload) {
+    return null;
+  }
+
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = extractActionId(item);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (typeof payload === "object") {
+    if (typeof payload.actionId === "string") {
+      return payload.actionId;
+    }
+    if (typeof payload.id === "string") {
+      return payload.id;
+    }
+
+    for (const key of ["actions", "results", "items", "data"]) {
+      const found = extractActionId(payload[key]);
+      if (found) {
+        return found;
+      }
+    }
+
+    for (const value of Object.values(payload)) {
+      if (typeof value === "object" && value !== null) {
+        const found = extractActionId(value);
+        if (found) {
+          return found;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 async function runOneCli(args) {
