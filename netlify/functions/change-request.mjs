@@ -53,7 +53,6 @@ export const handler = async (event) => {
   }
 
   const boxApiKey = process.env.UPSTASH_BOX_API_KEY;
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
   const githubRepo = process.env.GITHUB_REPO;
   const githubTargetBranch = process.env.GITHUB_TARGET_BRANCH || "main";
   const boxAgentModel = process.env.BOX_AGENT_MODEL || "anthropic/claude-sonnet-4-5";
@@ -68,14 +67,6 @@ export const handler = async (event) => {
       statusCode: 500,
       headers: jsonHeaders,
       body: JSON.stringify({ error: "Missing UPSTASH_BOX_API_KEY env var" }),
-    };
-  }
-
-  if (!anthropicApiKey) {
-    return {
-      statusCode: 500,
-      headers: jsonHeaders,
-      body: JSON.stringify({ error: "Missing ANTHROPIC_API_KEY env var" }),
     };
   }
 
@@ -170,7 +161,6 @@ export const handler = async (event) => {
       agent: {
         harness: Agent.ClaudeCode,
         model: boxAgentModel,
-        apiKey: anthropicApiKey,
       },
     });
 
