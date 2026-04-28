@@ -1,0 +1,13 @@
+{
+  "name": "boxfixer",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "netlify dev"
+  },
+  "dependencies": {
+    "@withone/cli": "latest",
+    "zod": "^3.23.8"
+  }
+}

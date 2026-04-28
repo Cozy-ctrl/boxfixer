@@ -114,6 +114,113 @@
         background: #fff;
       }
 
+      .launcher {
+        position: fixed;
+        right: 1.25rem;
+        bottom: 1.25rem;
+        width: 56px;
+        height: 56px;
+        border: 0;
+        border-radius: 999px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 1.5rem;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 14px 32px rgba(10, 122, 92, 0.35);
+      }
+
+      .launcher:hover {
+        background: var(--accent-dark);
+      }
+
+      .modal {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+        z-index: 100;
+      }
+
+      .modal.open {
+        display: flex;
+      }
+
+      .modal-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.5);
+      }
+
+      .modal-panel {
+        position: relative;
+        width: min(640px, 100%);
+        background: #fff;
+        border-radius: 16px;
+        padding: 1.25rem;
+        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.2);
+      }
+
+      .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 0.75rem;
+      }
+
+      .modal-title {
+        margin: 0;
+        font-size: 1.2rem;
+      }
+
+      .icon-btn {
+        border: 0;
+        background: transparent;
+        font-size: 1.2rem;
+        cursor: pointer;
+        color: #6b7280;
+      }
+
+      .field {
+        margin-top: 0.75rem;
+      }
+
+      .field label {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-weight: 600;
+      }
+
+      .field input,
+      .field textarea {
+        width: 100%;
+        border: 1px solid #d8dadd;
+        border-radius: 10px;
+        padding: 0.7rem 0.8rem;
+        font: inherit;
+      }
+
+      .field textarea {
+        min-height: 120px;
+        resize: vertical;
+      }
+
+      .form-actions {
+        margin-top: 1rem;
+        display: flex;
+        gap: 0.6rem;
+      }
+
+      .status {
+        margin-top: 0.65rem;
+        font-size: 0.95rem;
+        color: var(--muted);
+        min-height: 1.4em;
+      }
+
       footer {
         margin-top: 2rem;
         color: var(--muted);
@@ -152,5 +259,107 @@
         Built as a static page for Netlify deployment.
       </footer>
     </div>
+
+    <button class="launcher" id="helpLauncher" type="button" aria-label="Open change request">?</button>
+
+    <div class="modal" id="changeModal" aria-hidden="true">
+      <div class="modal-backdrop" id="modalBackdrop"></div>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="changeTitle">
+        <div class="modal-header">
+          <h2 class="modal-title" id="changeTitle">Request a website change</h2>
+          <button class="icon-btn" id="closeModalBtn" type="button" aria-label="Close modal">✕</button>
+        </div>
+
+        <form id="changeForm">
+          <div class="field">
+            <label for="requestTitle">Change title</label>
+            <input id="requestTitle" name="title" maxlength="120" required />
+          </div>
+
+          <div class="field">
+            <label for="requestDescription">What should change?</label>
+            <textarea id="requestDescription" name="description" maxlength="3000" required></textarea>
+          </div>
+
+          <div class="field">
+            <label for="requestContact">Email (optional)</label>
+            <input id="requestContact" name="email" type="email" maxlength="200" />
+          </div>
+
+          <div class="form-actions">
+            <button class="btn btn-primary" type="submit" id="submitBtn">Send request</button>
+            <button class="btn btn-secondary" type="button" id="cancelBtn">Cancel</button>
+          </div>
+          <div class="status" id="formStatus" aria-live="polite"></div>
+        </form>
+      </div>
+    </div>
+
+    <script>
+      const launcher = document.getElementById("helpLauncher");
+      const modal = document.getElementById("changeModal");
+      const backdrop = document.getElementById("modalBackdrop");
+      const closeModalBtn = document.getElementById("closeModalBtn");
+      const cancelBtn = document.getElementById("cancelBtn");
+      const form = document.getElementById("changeForm");
+      const statusEl = document.getElementById("formStatus");
+      const submitBtn = document.getElementById("submitBtn");
+
+      function openModal() {
+        modal.classList.add("open");
+        modal.setAttribute("aria-hidden", "false");
+        document.getElementById("requestTitle").focus();
+      }
+
+      function closeModal() {
+        modal.classList.remove("open");
+        modal.setAttribute("aria-hidden", "true");
+        launcher.focus();
+      }
+
+      launcher.addEventListener("click", openModal);
+      closeModalBtn.addEventListener("click", closeModal);
+      cancelBtn.addEventListener("click", closeModal);
+      backdrop.addEventListener("click", closeModal);
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && modal.classList.contains("open")) {
+          closeModal();
+        }
+      });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        statusEl.textContent = "Sending your request...";
+        submitBtn.disabled = true;
+
+        const payload = {
+          title: form.title.value,
+          description: form.description.value,
+          email: form.email.value || undefined,
+          sourceUrl: window.location.href,
+        };
+
+        try {
+          const response = await fetch("/.netlify/functions/change-request", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error || "Could not submit request.");
+          }
+
+          statusEl.textContent = "Request sent. The automation will process this change.";
+          form.reset();
+        } catch (error) {
+          statusEl.textContent = error.message || "Something went wrong while submitting.";
+        } finally {
+          submitBtn.disabled = false;
+        }
+      });
+    </script>
   </body>
 </html>
