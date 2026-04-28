@@ -7,6 +7,7 @@
     "dev": "netlify dev"
   },
   "dependencies": {
+    "@upstash/box": "^0.5.10",
     "@withone/cli": "latest",
     "zod": "^3.23.8"
   }

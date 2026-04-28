@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { Agent, Box } from "@upstash/box";
 import { z } from "zod";
 
 const execFileAsync = promisify(execFile);
@@ -9,6 +10,12 @@ const requestSchema = z.object({
   description: z.string().min(10).max(3000),
   email: z.string().email().optional(),
   sourceUrl: z.string().url().optional(),
+});
+
+const resultSchema = z.object({
+  summary: z.string().max(2000).optional(),
+  branch: z.string().max(200).optional(),
+  prUrl: z.string().url().optional(),
 });
 
 const jsonHeaders = {
@@ -46,11 +53,14 @@ export const handler = async (event) => {
   }
 
   const boxApiKey = process.env.UPSTASH_BOX_API_KEY;
-  const oneApiKey = process.env.ONE_API_KEY;
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  const githubRepo = process.env.GITHUB_REPO;
+  const githubTargetBranch = process.env.GITHUB_TARGET_BRANCH || "main";
+  const boxAgentModel = process.env.BOX_AGENT_MODEL || "anthropic/claude-sonnet-4-5";
   const oneGithubConnectionKey = process.env.ONE_GITHUB_CONNECTION_KEY;
-  const oneGithubActionKey = process.env.ONE_GITHUB_ACTION_KEY || process.env.ONE_GITHUB_CREATE_ISSUE_ACTION_ID;
-  const githubOwner = process.env.GITHUB_OWNER;
-  const githubRepoName = process.env.GITHUB_REPO_NAME;
+  const oneGithubCreateIssueActionId = process.env.ONE_GITHUB_CREATE_ISSUE_ACTION_ID;
+  const oneApiKey = process.env.ONE_API_KEY;
+  const [githubOwner, githubRepoName] = parseOwnerRepo(githubRepo);
   const dryRun = process.env.BOXFIXER_DRY_RUN !== "false";
 
   if (!boxApiKey) {
@@ -58,6 +68,22 @@ export const handler = async (event) => {
       statusCode: 500,
       headers: jsonHeaders,
       body: JSON.stringify({ error: "Missing UPSTASH_BOX_API_KEY env var" }),
+    };
+  }
+
+  if (!anthropicApiKey) {
+    return {
+      statusCode: 500,
+      headers: jsonHeaders,
+      body: JSON.stringify({ error: "Missing ANTHROPIC_API_KEY env var" }),
+    };
+  }
+
+  if (!githubRepo) {
+    return {
+      statusCode: 500,
+      headers: jsonHeaders,
+      body: JSON.stringify({ error: "Missing GITHUB_REPO env var" }),
     };
   }
 
@@ -77,11 +103,11 @@ export const handler = async (event) => {
     };
   }
 
-  if (!oneGithubActionKey) {
+  if (!oneGithubCreateIssueActionId) {
     return {
       statusCode: 500,
       headers: jsonHeaders,
-      body: JSON.stringify({ error: "Missing ONE_GITHUB_ACTION_KEY env var" }),
+      body: JSON.stringify({ error: "Missing ONE_GITHUB_CREATE_ISSUE_ACTION_ID env var" }),
     };
   }
 
@@ -97,27 +123,26 @@ export const handler = async (event) => {
 
   try {
     const data = parsedRequest.data;
-    const issueTitle = `[Site Change] ${data.title}`;
-    const issueBody = [
+    const normalizedRepo = normalizeRepo(githubRepo);
+    const requestIssueBody = [
       "A new website change request was submitted.",
       "",
       `Title: ${data.title}`,
       `Description: ${data.description}`,
       data.email ? `Requester email: ${data.email}` : "Requester email: not provided",
-      data.sourceUrl ? `Source page: ${data.sourceUrl}` : "",
+      data.sourceUrl ? `Source URL: ${data.sourceUrl}` : "",
     ]
       .filter(Boolean)
       .join("\n");
 
-    const commandData = {
-      title: issueTitle,
-      body: issueBody,
+    const issueResult = await createGithubIssueWithOne({
+      title: `[BoxFixer Request] ${data.title}`,
+      body: requestIssueBody,
       owner: githubOwner,
       repo: githubRepoName,
-      repo_owner: githubOwner,
-      repo_name: githubRepoName,
-      repository: githubRepoName,
-    };
+      actionId: oneGithubCreateIssueActionId,
+      connectionKey: oneGithubConnectionKey,
+    });
 
     if (dryRun) {
       return {
@@ -126,47 +151,92 @@ export const handler = async (event) => {
         body: JSON.stringify({
           ok: true,
           dryRun: true,
-          message: "Request accepted. Set BOXFIXER_DRY_RUN=false to execute One CLI GitHub issue creation.",
-          one: {
-            platform: "github",
-            actionId: oneGithubActionKey,
-            connectionKey: oneGithubConnectionKey,
-            data: commandData,
+          message: "Request accepted. Set BOXFIXER_DRY_RUN=false to run Box agent and push a PR.",
+          plan: {
+            repo: normalizedRepo,
+            targetBranch: githubTargetBranch,
+            request: {
+              title: data.title,
+              description: data.description,
+            },
           },
+          issueResult,
         }),
       };
     }
 
-    const oneOutput = await runOneCli([
-      "actions",
-      "execute",
-      "github",
-      oneGithubActionKey,
-      oneGithubConnectionKey,
-      "-d",
-      JSON.stringify(commandData),
-    ]);
+    const box = await Box.create({
+      runtime: "node",
+      agent: {
+        harness: Agent.ClaudeCode,
+        model: boxAgentModel,
+        apiKey: anthropicApiKey,
+      },
+    });
 
-    return {
-      statusCode: 200,
-      headers: jsonHeaders,
-      body: JSON.stringify({
-        ok: true,
-        dryRun: false,
-        oneOutput,
-      }),
-    };
+    try {
+      const prompt = [
+        "You are an autonomous maintainer for this website repository.",
+        "Plan and produce the exact code changes needed for the request.",
+        `Target repository: ${normalizedRepo}`,
+        `Base branch: ${githubTargetBranch}`,
+        "Return a concise implementation summary.",
+        "",
+        `Change title: ${data.title}`,
+        `Change details: ${data.description}`,
+        data.email ? `Requester email: ${data.email}` : "Requester email: not provided",
+        data.sourceUrl ? `Source URL: ${data.sourceUrl}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+
+      const run = await box.agent.run({
+        prompt,
+        responseSchema: resultSchema,
+      });
+
+      return {
+        statusCode: 200,
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          ok: true,
+          dryRun: false,
+          result: run.result,
+          issueResult,
+        }),
+      };
+    } finally {
+      await box.delete();
+    }
   } catch (error) {
     return {
       statusCode: 500,
       headers: jsonHeaders,
       body: JSON.stringify({
-        error: "Failed to process change request through One CLI",
+        error: "Failed to process change request through Box",
         message: error instanceof Error ? error.message : "Unknown error",
       }),
     };
   }
 };
+
+async function createGithubIssueWithOne({ title, body, owner, repo, actionId, connectionKey }) {
+  const result = await runOneCli([
+    "actions",
+    "execute",
+    "github",
+    actionId,
+    connectionKey,
+    "-d",
+    JSON.stringify({ title, body, owner, repo }),
+  ]);
+
+  if (result?.error) {
+    throw new Error(typeof result.error === "string" ? result.error : "One CLI action execution failed");
+  }
+
+  return result;
+}
 
 async function runOneCli(args) {
   const fullArgs = ["--agent", ...args];
@@ -190,6 +260,28 @@ async function runOneCli(args) {
 
     throw error;
   }
+}
+
+function normalizeRepo(value) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed.replace(/^https?:\/\//, "").replace(/\.git$/, "");
+  }
+  return trimmed.replace(/^github\.com\//, "").replace(/\.git$/, "");
+}
+
+function parseOwnerRepo(repo) {
+  if (!repo) {
+    return [null, null];
+  }
+
+  const normalized = normalizeRepo(repo);
+  const [owner, name] = normalized.split("/");
+  if (!owner || !name) {
+    return [null, null];
+  }
+
+  return [owner, name];
 }
 
 function parseCliStdout(stdout) {
