@@ -346,10 +346,11 @@
             body: JSON.stringify(payload),
           });
 
-          const data = await response.json();
+          const data = await response.json().catch(() => ({}));
 
           if (!response.ok) {
-            throw new Error(data.error || "Could not submit request.");
+            const details = [data.error, data.message].filter(Boolean).join(": ");
+            throw new Error(details || "Could not submit request.");
           }
 
           statusEl.textContent = "Request sent. The automation will process this change.";
