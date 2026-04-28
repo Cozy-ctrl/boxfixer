@@ -393,7 +393,13 @@ function parseOwnerRepo(repo) {
   }
 
   const normalized = normalizeRepo(repo);
-  const [owner, name] = normalized.split("/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length < 2) {
+    return [null, null];
+  }
+
+  const owner = parts[parts.length - 2];
+  const name = parts[parts.length - 1];
   if (!owner || !name) {
     return [null, null];
   }
