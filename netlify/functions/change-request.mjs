@@ -281,10 +281,26 @@ async function verifyGithubRepoAccessInBox({ box, oneApiKey, connectionKey, owne
   const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} --query-params ${shellQuote(queryParams)}`;
 
   const result = await box.exec.command(command);
-  ensureCommandSucceeded(result, `One GitHub connection cannot access repository ${owner}/${repo}`);
+  try {
+    ensureCommandSucceeded(result, `One GitHub connection cannot access repository ${owner}/${repo}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('"status":"404"') || message.includes('"message":"Not Found"')) {
+      throw new Error(
+        `One GitHub connection cannot see ${owner}/${repo}. GitHub returned 404 (Not Found). Confirm the repo exists and re-authorize the One GitHub connection with access to this repository/org.`,
+      );
+    }
+    throw error;
+  }
 
   const parsed = parseCliStdout(extractCommandOutput(result));
   if (parsed?.error) {
+    const errorText = typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error);
+    if (errorText.includes('"status":"404"') || errorText.includes('"message":"Not Found"')) {
+      throw new Error(
+        `One GitHub connection cannot see ${owner}/${repo}. GitHub returned 404 (Not Found). Confirm the repo exists and re-authorize the One GitHub connection with access to this repository/org.`,
+      );
+    }
     throw new Error(
       `One GitHub connection cannot access repository ${owner}/${repo}: ${typeof parsed.error === "string" ? parsed.error : "unknown error"}`,
     );
