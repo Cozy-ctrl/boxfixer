@@ -209,7 +209,7 @@ export const handler = async (event) => {
 
 async function ensureOneCliInstalled(box, oneApiKey) {
   await box.exec.command(
-    `${buildOneEnv(oneApiKey)} sh -c ${shellQuote("mkdir -p /tmp/one-cli /tmp/box-home /tmp/.npm-cache && (command -v one >/dev/null 2>&1 || npm install -g @withone/cli) && one init -y -g && one --agent list")}`,
+    `${buildOneEnv(oneApiKey)} sh -c ${shellQuote("mkdir -p /tmp/one-cli /tmp/box-home /tmp/.npm-cache && (command -v one >/dev/null 2>&1 || npm install -g @withone/cli) && one --agent list")}`,
   );
 }
 
