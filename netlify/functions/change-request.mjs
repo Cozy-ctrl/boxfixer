@@ -222,7 +222,9 @@ async function resolveGithubCreateIssueActionIdInBox({ box, oneApiKey }) {
 
   const actionId = extractActionId(parsed);
   if (!actionId) {
-    throw new Error("Unable to resolve GitHub create-issue action ID from One CLI search results");
+    const raw = typeof parsed?.raw === "string" ? parsed.raw : JSON.stringify(parsed);
+    const snippet = String(raw || "").slice(0, 600);
+    throw new Error(`Unable to resolve GitHub create-issue action ID from One CLI search results. Output: ${snippet}`);
   }
 
   return actionId;
@@ -270,6 +272,10 @@ function extractActionId(payload) {
     return null;
   }
 
+  if (typeof payload === "string") {
+    return extractActionIdFromText(payload);
+  }
+
   if (Array.isArray(payload)) {
     for (const item of payload) {
       const found = extractActionId(item);
@@ -284,8 +290,17 @@ function extractActionId(payload) {
     if (typeof payload.actionId === "string") {
       return payload.actionId;
     }
+    if (typeof payload.action_id === "string") {
+      return payload.action_id;
+    }
     if (typeof payload.id === "string") {
       return payload.id;
+    }
+    if (typeof payload.actionKey === "string") {
+      return payload.actionKey;
+    }
+    if (typeof payload.key === "string") {
+      return payload.key;
     }
 
     for (const key of ["actions", "results", "items", "data"]) {
@@ -302,6 +317,25 @@ function extractActionId(payload) {
           return found;
         }
       }
+    }
+  }
+
+  return null;
+}
+
+function extractActionIdFromText(text) {
+  const patterns = [
+    /"actionId"\s*:\s*"([^"]+)"/i,
+    /"action_id"\s*:\s*"([^"]+)"/i,
+    /"actionKey"\s*:\s*"([^"]+)"/i,
+    /"key"\s*:\s*"([^"]+)"/i,
+    /\b([a-z0-9._-]*create[a-z0-9._-]*issue[a-z0-9._-]*)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return match[1];
     }
   }
 
@@ -336,14 +370,22 @@ function parseCliStdout(stdout) {
     return { raw: "" };
   }
 
-  const lines = trimmed.split("\n");
-  const lastLine = lines[lines.length - 1];
-
   try {
-    return JSON.parse(lastLine);
-  } catch {
-    return { raw: trimmed };
+    return JSON.parse(trimmed);
+  } catch {}
+
+  const lines = trimmed.split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const candidate = lines[i].trim();
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return JSON.parse(candidate);
+    } catch {}
   }
+
+  return { raw: trimmed };
 }
 
 function safeParseJson(value) {
