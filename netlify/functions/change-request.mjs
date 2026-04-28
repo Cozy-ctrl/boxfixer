@@ -290,38 +290,36 @@ async function runOneCli(args) {
   const execOptions = {
     timeout: 30_000,
     maxBuffer: 1024 * 1024,
-    env: process.env,
+    env: {
+      ...process.env,
+      HOME: process.env.HOME || "/tmp",
+    },
   };
 
-  try {
-    const result = await execFileAsync("one", fullArgs, execOptions);
-    return parseCliStdout(result.stdout);
-  } catch (error) {
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
-      throw error;
-    }
+  const attempts = [
+    { cmd: "one", argv: fullArgs },
+    { cmd: "./node_modules/.bin/one", argv: fullArgs },
+    { cmd: "node_modules/.bin/one", argv: fullArgs },
+    { cmd: `${process.cwd()}/node_modules/.bin/one`, argv: fullArgs },
+    { cmd: "/var/task/node_modules/.bin/one", argv: fullArgs },
+    { cmd: "npx", argv: ["--no-install", "one", ...fullArgs] },
+  ];
 
+  let lastError;
+  for (const attempt of attempts) {
     try {
-      const result = await execFileAsync("npx", ["--no-install", "one", ...fullArgs], execOptions);
+      const result = await execFileAsync(attempt.cmd, attempt.argv, execOptions);
       return parseCliStdout(result.stdout);
-    } catch (npxError) {
-      if (!(npxError && typeof npxError === "object" && "code" in npxError && npxError.code === "ENOENT")) {
-        throw npxError;
-      }
+    } catch (error) {
+      lastError = error;
     }
-
-    try {
-      const localBin = await execFileAsync("./node_modules/.bin/one", fullArgs, execOptions);
-      return parseCliStdout(localBin.stdout);
-    } catch (localBinError) {
-      if (!(localBinError && typeof localBinError === "object" && "code" in localBinError && localBinError.code === "ENOENT")) {
-        throw localBinError;
-      }
-    }
-
-    const localBinFromRoot = await execFileAsync("node_modules/.bin/one", fullArgs, execOptions);
-    return parseCliStdout(localBinFromRoot.stdout);
   }
+
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+
+  throw new Error("Failed to execute One CLI");
 }
 
 function normalizeRepo(value) {
