@@ -222,7 +222,7 @@ async function resolveGithubCreateIssueActionIdInBox({ box, oneApiKey }) {
     throw new Error(typeof parsed.error === "string" ? parsed.error : "One CLI action search failed");
   }
 
-  const actionId = extractActionId(parsed);
+  const actionId = selectGithubCreateIssueActionId(parsed) || extractActionId(parsed);
   if (!actionId) {
     const raw = typeof parsed?.raw === "string" ? parsed.raw : JSON.stringify(parsed);
     const snippet = String(raw || "").slice(0, 600);
@@ -233,8 +233,9 @@ async function resolveGithubCreateIssueActionIdInBox({ box, oneApiKey }) {
 }
 
 async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owner, repo, actionId, connectionKey }) {
-  const payload = JSON.stringify({ title, body, owner, repo });
-  const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} -d ${shellQuote(payload)}`;
+  const pathVars = JSON.stringify({ owner, repo });
+  const payload = JSON.stringify({ title, body });
+  const command = `${buildOneEnv(oneApiKey)} one --agent actions execute github ${shellQuote(actionId)} ${shellQuote(connectionKey)} --path-vars ${shellQuote(pathVars)} -d ${shellQuote(payload)}`;
   const result = await box.exec.command(command);
   const parsed = parseCliStdout(extractCommandStdout(result));
 
@@ -243,6 +244,33 @@ async function createGithubIssueWithOneInBox({ box, oneApiKey, title, body, owne
   }
 
   return parsed;
+}
+
+function selectGithubCreateIssueActionId(payload) {
+  const actions = Array.isArray(payload?.actions) ? payload.actions : [];
+  for (const action of actions) {
+    if (!action || typeof action !== "object") {
+      continue;
+    }
+
+    const title = typeof action.title === "string" ? action.title.toLowerCase() : "";
+    const path = typeof action.path === "string" ? action.path.toLowerCase() : "";
+    const id = typeof action.actionId === "string" ? action.actionId : null;
+
+    if (!id) {
+      continue;
+    }
+
+    if (title.includes("create") && title.includes("issue") && title.includes("repository")) {
+      return id;
+    }
+
+    if (path === "/repos/{{owner}}/{{repo}}/issues") {
+      return id;
+    }
+  }
+
+  return null;
 }
 
 function buildOneEnv(oneApiKey) {
