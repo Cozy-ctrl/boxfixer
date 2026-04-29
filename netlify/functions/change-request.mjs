@@ -125,7 +125,7 @@ export const handler = async (event) => {
 
     const box = await Box.create({
       runtime: "node",
-      name: "netlify-box",
+      name: `netlify-box-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       agent: {
         harness: Agent.ClaudeCode,
         model: boxAgentModel,
